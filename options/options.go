@@ -87,6 +87,8 @@ const (
 	FormatDefault = "default"
 	// FormatRaw specifies that results should be output in raw format.
 	FormatRaw = "raw"
+	// FormatCSV specifies that results should be output in csv format.
+	FormatCSV = "csv"
 
 	// Environment variables.
 
@@ -234,7 +236,7 @@ func (o *Options) isV6Enabled() bool {
 
 func validateFormat(format string) bool {
 	switch format {
-	case FormatJSON, FormatSarif, FormatDefault, FormatRaw:
+	case FormatJSON, FormatSarif, FormatDefault, FormatRaw, FormatCSV:
 		return true
 	default:
 		return false

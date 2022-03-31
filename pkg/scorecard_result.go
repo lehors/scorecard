@@ -15,9 +15,12 @@
 package pkg
 
 import (
+	"encoding/csv"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/olekukonko/tablewriter"
@@ -111,7 +114,7 @@ func FormatResults(
 
 	switch opts.Format {
 	case options.FormatDefault:
-		err = results.AsString(opts.ShowDetails, log.ParseLevel(opts.LogLevel), doc, os.Stdout)
+		err = results.AsASCII(opts.ShowDetails, log.ParseLevel(opts.LogLevel), doc, os.Stdout)
 	case options.FormatSarif:
 		// TODO: support config files and update checker.MaxResultScore.
 		err = results.AsSARIF(opts.ShowDetails, log.ParseLevel(opts.LogLevel), os.Stdout, doc, policy)
@@ -119,6 +122,8 @@ func FormatResults(
 		err = results.AsJSON2(opts.ShowDetails, log.ParseLevel(opts.LogLevel), doc, os.Stdout)
 	case options.FormatRaw:
 		err = results.AsRawJSON(os.Stdout)
+	case options.FormatCSV:
+		err = results.AsCSV(opts.ShowDetails, log.ParseLevel(opts.LogLevel), doc, os.Stdout)
 	default:
 		err = sce.WithMessage(
 			sce.ErrScorecardInternal,
@@ -136,10 +141,10 @@ func FormatResults(
 	return nil
 }
 
-// AsString returns ScorecardResult in string format.
-func (r *ScorecardResult) AsString(showDetails bool, logLevel log.Level,
-	checkDocs checks.Doc, writer io.Writer,
-) error {
+// GetScores returns ScorecardResult as a float and a table of strings.
+func (r *ScorecardResult) GetScores(showDetails bool, logLevel log.Level,
+	checkDocs checks.Doc,
+) (float64, [][]string, error) {
 	data := make([][]string, len(r.Checks))
 	//nolint
 	for i, row := range r.Checks {
@@ -162,7 +167,7 @@ func (r *ScorecardResult) AsString(showDetails bool, logLevel log.Level,
 
 		cdoc, e := checkDocs.GetCheck(row.Name)
 		if e != nil {
-			return sce.WithMessage(sce.ErrScorecardInternal, fmt.Sprintf("GetCheck: %s: %v", row.Name, e))
+			return 0, nil, sce.WithMessage(sce.ErrScorecardInternal, fmt.Sprintf("GetCheck: %s: %v", row.Name, e))
 		}
 
 		doc := cdoc.GetDocumentationURL(r.Scorecard.CommitSHA)
@@ -182,6 +187,19 @@ func (r *ScorecardResult) AsString(showDetails bool, logLevel log.Level,
 	}
 
 	score, err := r.GetAggregateScore(checkDocs)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	return score, data, err
+}
+
+// AsASCII writes out ScorecardResult in ASCII table format.
+func (r *ScorecardResult) AsASCII(showDetails bool, logLevel log.Level,
+	checkDocs checks.Doc, writer io.Writer,
+) error {
+
+	score, data, err := r.GetScores(showDetails, logLevel, checkDocs)
 	if err != nil {
 		return err
 	}
@@ -208,5 +226,38 @@ func (r *ScorecardResult) AsString(showDetails bool, logLevel log.Level,
 	table.SetRowLine(true)
 	table.Render()
 
+	return nil
+}
+
+// AsCSV outputs ScorecardResult in CSV format.
+func (r *ScorecardResult) AsCSV(showDetails bool, logLevel log.Level,
+	checkDocs checks.Doc, writer io.Writer) error {
+	score, err := r.GetAggregateScore(checkDocs)
+	if err != nil {
+		return err
+	}
+	w := csv.NewWriter(writer)
+	record := []string{r.Repo.Name, scoreToString(score)}
+	columns := []string{"Repository", "AggScore"}
+
+	// UPGRADEv2: remove nolint after ugrade.
+	//nolint
+	for _, checkResult := range r.Checks {
+		columns = append(columns, checkResult.Name+"_Pass", checkResult.Name+"_Confidence")
+		record = append(record, strconv.FormatBool(checkResult.Pass),
+			strconv.Itoa(checkResult.Confidence))
+		if showDetails {
+			columns = append(columns, checkResult.Name+"_Details")
+			record = append(record, checkResult.Details...)
+		}
+	}
+	fmt.Fprintf(writer, "%s\n", strings.Join(columns, ","))
+	if err := w.Write(record); err != nil {
+		return sce.WithMessage(sce.ErrScorecardInternal, fmt.Sprintf("csv.Write: %v", err))
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return sce.WithMessage(sce.ErrScorecardInternal, fmt.Sprintf("csv.Flush: %v", err))
+	}
 	return nil
 }
